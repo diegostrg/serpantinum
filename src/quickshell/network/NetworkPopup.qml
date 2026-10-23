@@ -196,7 +196,11 @@ Item {
             popupWindowRoot.pendingPostPairConnect = "";
             popupWindowRoot.btSessionActive = false;
             popupWindowRoot.btOpsInFlight = ({});
+            popupWindowRoot.busyTasks = ({});
+            popupWindowRoot.disconnectingDevices = ({});
             popupWindowRoot.unpairingDevices = ({});
+            popupWindowRoot.connectingId = "";
+            popupWindowRoot.failedId = "";
             popupWindowRoot.hoveredCardCount = 0;
             popupWindowRoot.disconnectHoverCount = 0;
             popupWindowRoot.introState = 0.0;
@@ -387,6 +391,9 @@ Item {
             }
             function onDiscoveringChanged() {
                 popupWindowRoot.requestBtRebuild();
+            }
+            function onPairableChanged() {
+                popupWindowRoot.restoreBtAgentPairable();
             }
         }
         Connections {
@@ -823,9 +830,31 @@ Item {
     property string pendingPairThenConnect: ""
     property string pendingPostPairConnect: ""
     property bool btSessionActive: false
+    property bool btAgentPairableKnown: false
+    property bool btAgentPairableSaved: false
+    property bool btAgentWanted: popupWindowRoot.visible && popupWindowRoot.activeMode === "bt"
 
     function isBtOpBusy(mac) {
         return !!popupWindowRoot.btOpsInFlight[mac];
+    }
+
+    // bluetoothctl --agent enables Pairable while it runs and disables it on
+    // exit, even when it was already enabled. Preserve the user's value for
+    // the lifetime of the agent instead of letting bluetoothctl overwrite it.
+    function saveBtAgentPairable() {
+        if (popupWindowRoot.btAgentPairableKnown) return;
+        let adapter = Bluetooth.defaultAdapter;
+        if (!adapter) return;
+        popupWindowRoot.btAgentPairableSaved = adapter.pairable;
+        popupWindowRoot.btAgentPairableKnown = true;
+    }
+
+    function restoreBtAgentPairable() {
+        if (!popupWindowRoot.btAgentPairableKnown) return;
+        let adapter = Bluetooth.defaultAdapter;
+        if (adapter && adapter.pairable !== popupWindowRoot.btAgentPairableSaved) {
+            adapter.pairable = popupWindowRoot.btAgentPairableSaved;
+        }
     }
 
     function isBtUnpairing(mac) {
@@ -858,12 +887,25 @@ Item {
     }
 
     function clearBtPendingState() {
+        let pendingMac = popupWindowRoot.pendingPostPairConnect || popupWindowRoot.pendingPairThenConnect;
         popupWindowRoot.pendingPairThenConnect = "";
         popupWindowRoot.pendingPostPairConnect = "";
         popupWindowRoot.btSessionActive = false;
+        btConnectSimTimer.stop();
+        btConnectDelayTimer.stop();
         btPostPairConnectTimer.stop();
         btPostPairStabilityTimer.stop();
         btPostPairDeadlineTimer.stop();
+
+        if (pendingMac) {
+            let bt = Object.assign({}, popupWindowRoot.busyTasks);
+            if (bt[pendingMac]) {
+                delete bt[pendingMac];
+                popupWindowRoot.busyTasks = bt;
+            }
+            if (popupWindowRoot.connectingId === pendingMac) popupWindowRoot.connectingId = "";
+        }
+
         if (!popupWindowRoot.currentConn) {
             popupWindowRoot.showInfoView = false;
             popupWindowRoot.syncCores();
@@ -1127,6 +1169,8 @@ Item {
         popupWindowRoot.busyTasks = ({});
         popupWindowRoot.disconnectingDevices = ({});
         popupWindowRoot.unpairingDevices = ({});
+        popupWindowRoot.connectingId = "";
+        popupWindowRoot.failedId = "";
         popupWindowRoot.clearBtPendingState();
         popupWindowRoot.currentCores = [null, null, null, null, null];
         popupWindowRoot.coreVisualIndices = [0, 0, 0, 0, 0];
@@ -1712,13 +1756,57 @@ Item {
         if (!isCache) validateActiveMode();
     }
 
+    onBtAgentWantedChanged: {
+        if (btAgentWanted) {
+            popupWindowRoot.saveBtAgentPairable();
+            btAgentProcess.running = true;
+        } else {
+            if (btAgentProcess.running) {
+                btAgentProcess.running = false;
+            } else {
+                popupWindowRoot.restoreBtAgentPairable();
+                popupWindowRoot.btAgentPairableKnown = false;
+            }
+        }
+    }
+
     Process {
         id: btAgentProcess
         command: ["bluetoothctl", "--agent", "NoInputNoOutput"]
         stdinEnabled: true
-        running: popupWindowRoot.visible && popupWindowRoot.activeMode === "bt"
+        // Do not request the default agent: if blueman or another applet
+        // already owns it, stealing it would change system behavior. BlueZ
+        // can still use the existing agent; registration errors are logged.
         stdout: StdioCollector {}
-        stderr: StdioCollector {}
+        stderr: StdioCollector {
+            waitForEnd: false
+            property bool reported: false
+            onDataChanged: {
+                if (reported) return;
+                let text = this.text.trim();
+                if (text === "") return;
+                if (text.indexOf("Failed") !== -1 || text.indexOf("AlreadyExists") !== -1 || text.indexOf("org.bluez.Error") !== -1) {
+                    reported = true;
+                    console.warn("Bluetooth pairing agent:", text);
+                }
+            }
+        }
+        onRunningChanged: {
+            if (!running) popupWindowRoot.restoreBtAgentPairable();
+        }
+        onExited: (exitCode, exitStatus) => {
+            popupWindowRoot.restoreBtAgentPairable();
+            popupWindowRoot.btAgentPairableKnown = false;
+            if (popupWindowRoot.btAgentWanted) {
+                console.warn("Bluetooth pairing agent exited with code", exitCode);
+            }
+        }
+        Component.onCompleted: {
+            if (popupWindowRoot.btAgentWanted) {
+                popupWindowRoot.saveBtAgentPairable();
+                btAgentProcess.running = true;
+            }
+        }
     }
 
     Process {
