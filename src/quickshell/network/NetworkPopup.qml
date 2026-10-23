@@ -191,6 +191,7 @@ Item {
             popupWindowRoot.pendingWifiSsid = "";
             popupWindowRoot.pendingPairThenConnect = "";
             popupWindowRoot.btOpsInFlight = ({});
+            popupWindowRoot.unpairingDevices = ({});
             popupWindowRoot.hoveredCardCount = 0;
             popupWindowRoot.disconnectHoverCount = 0;
             popupWindowRoot.introState = 0.0;
@@ -691,6 +692,7 @@ Item {
 
     property var busyTasks: ({})
     property var disconnectingDevices: ({})
+    property var unpairingDevices: ({})
     property string connectingId: ""
     property string failedId: ""
 
@@ -699,6 +701,61 @@ Item {
 
     function isBtOpBusy(mac) {
         return !!popupWindowRoot.btOpsInFlight[mac];
+    }
+
+    function isBtUnpairing(mac) {
+        return !!popupWindowRoot.unpairingDevices[mac];
+    }
+
+    function forgetBtDevice(mac) {
+        if (!mac || popupWindowRoot.isBtOpBusy(mac)) return;
+
+        let devList = popupWindowRoot.getBtDevicesList();
+        let dev = null;
+        for (let i = 0; i < devList.length; i++) {
+            if (devList[i] && devList[i].address === mac) { dev = devList[i]; break; }
+        }
+        if (!dev || !(dev.paired || dev.bonded)) return;
+
+        let up = Object.assign({}, popupWindowRoot.unpairingDevices);
+        up[mac] = true;
+        popupWindowRoot.unpairingDevices = up;
+
+        let bt = Object.assign({}, popupWindowRoot.busyTasks);
+        bt[mac] = true;
+        popupWindowRoot.busyTasks = bt;
+        busyTimeout.restart();
+
+        popupWindowRoot.withBtOpLock(mac, function() {
+            let list = popupWindowRoot.getBtDevicesList();
+            let target = null;
+            for (let i = 0; i < list.length; i++) {
+                if (list[i] && list[i].address === mac) { target = list[i]; break; }
+            }
+            if (!target) {
+                let staleUp = Object.assign({}, popupWindowRoot.unpairingDevices);
+                delete staleUp[mac];
+                popupWindowRoot.unpairingDevices = staleUp;
+                let staleBusy = Object.assign({}, popupWindowRoot.busyTasks);
+                delete staleBusy[mac];
+                popupWindowRoot.busyTasks = staleBusy;
+                return;
+            }
+
+            let map = Object.assign({}, popupWindowRoot.btDeviceMap);
+            delete map[mac];
+            popupWindowRoot.btDeviceMap = map;
+
+            let dd = Object.assign({}, popupWindowRoot.disconnectingDevices);
+            delete dd[mac];
+            popupWindowRoot.disconnectingDevices = dd;
+
+            if (popupWindowRoot.connectingId === mac) popupWindowRoot.connectingId = "";
+            if (popupWindowRoot.failedId === mac) popupWindowRoot.failedId = "";
+
+            target.forget();
+            popupWindowRoot.requestBtRebuild();
+        });
     }
 
     function withBtOpLock(mac, fn) {
@@ -722,7 +779,23 @@ Item {
         return true;
     }
 
-    Timer { id: busyTimeout; interval: 15000; onTriggered: { popupWindowRoot.busyTasks = ({}); popupWindowRoot.disconnectingDevices = ({}); popupWindowRoot.connectingId = ""; } }
+    Timer {
+        id: busyTimeout
+        interval: 15000
+        onTriggered: {
+            let up = popupWindowRoot.unpairingDevices;
+            for (let mac in up) {
+                popupWindowRoot.failedId = mac;
+                failClearTimer.restart();
+                Sounds.playSfx("network/error.wav");
+                break;
+            }
+            popupWindowRoot.unpairingDevices = ({});
+            popupWindowRoot.busyTasks = ({});
+            popupWindowRoot.disconnectingDevices = ({});
+            popupWindowRoot.connectingId = "";
+        }
+    }
     Timer { id: failClearTimer; interval: 4000; onTriggered: popupWindowRoot.failedId = "" }
 
     Timer { id: ethPendingReset; interval: 8000; onTriggered: { popupWindowRoot.ethPowerPending = false; popupWindowRoot.expectedEthPower = ""; } }
@@ -879,6 +952,7 @@ Item {
         infoListModel.clear();
         popupWindowRoot.busyTasks = ({});
         popupWindowRoot.disconnectingDevices = ({});
+        popupWindowRoot.unpairingDevices = ({});
         popupWindowRoot.currentCores = [null, null, null, null, null];
         popupWindowRoot.coreVisualIndices = [0, 0, 0, 0, 0];
         popupWindowRoot.activeCoreCount = 0;
@@ -940,6 +1014,7 @@ Item {
             let obj = {
                 id: d.id || "", ssid: d.ssid || "", mac: d.mac || "",
                 name: d.name || d.ssid || "", icon: d.icon || "", security: d.security || "", action: d.action || "",
+                paired: d.paired === true,
                 isInfoNode: d.isInfoNode || false, isActionable: d.isActionable !== undefined ? d.isActionable : true,
                 cmdStr: d.cmdStr || "", parentIndex: d.parentIndex !== undefined ? d.parentIndex : -1
             };
@@ -1365,6 +1440,7 @@ Item {
                     name: name,
                     mac: mac,
                     icon: icon,
+                    paired: paired,
                     action: paired ? "Connect" : "Pair",
                     isActionable: true
                 });
@@ -1372,6 +1448,25 @@ Item {
         }
 
         popupWindowRoot.btDeviceMap = map;
+
+        let up = Object.assign({}, popupWindowRoot.unpairingDevices);
+        let upChanged = false;
+        for (let upMac in up) {
+            if (!map[upMac]) {
+                delete up[upMac];
+                upChanged = true;
+            }
+        }
+        if (upChanged) {
+            popupWindowRoot.unpairingDevices = Object.assign({}, up);
+            let busy = Object.assign({}, popupWindowRoot.busyTasks);
+            for (let busyMac in busy) {
+                if (!map[busyMac]) delete busy[busyMac];
+            }
+            popupWindowRoot.busyTasks = busy;
+            if (Object.keys(busy).length === 0 && Object.keys(popupWindowRoot.disconnectingDevices).length === 0) busyTimeout.stop();
+        }
+
         let isNowBtConn = newBtConnected.length > 0;
 
         if (!popupWindowRoot.deepEqual(popupWindowRoot.btConnected, newBtConnected)) {
