@@ -392,9 +392,6 @@ Item {
             function onDiscoveringChanged() {
                 popupWindowRoot.requestBtRebuild();
             }
-            function onPairableChanged() {
-                popupWindowRoot.restoreBtAgentPairable();
-            }
         }
         Connections {
             target: (Bluetooth.defaultAdapter && Bluetooth.defaultAdapter.devices) ? Bluetooth.defaultAdapter.devices : null
@@ -838,15 +835,19 @@ Item {
         return !!popupWindowRoot.btOpsInFlight[mac];
     }
 
-    // bluetoothctl --agent enables Pairable while it runs and disables it on
-    // exit, even when it was already enabled. Preserve the user's value for
-    // the lifetime of the agent instead of letting bluetoothctl overwrite it.
-    function saveBtAgentPairable() {
-        if (popupWindowRoot.btAgentPairableKnown) return;
+    // bluetoothctl --agent normally enables Pairable while it runs and disables
+    // it on exit, even when it was already enabled. That side effect is not
+    // reliable when blueman or another applet owns the default agent, so
+    // snapshot the user's value and enable it ourselves. Restore the snapshot
+    // when the agent exits.
+    function prepareBtAgentPairable() {
         let adapter = Bluetooth.defaultAdapter;
         if (!adapter) return;
-        popupWindowRoot.btAgentPairableSaved = adapter.pairable;
-        popupWindowRoot.btAgentPairableKnown = true;
+        if (!popupWindowRoot.btAgentPairableKnown) {
+            popupWindowRoot.btAgentPairableSaved = adapter.pairable;
+            popupWindowRoot.btAgentPairableKnown = true;
+        }
+        if (!adapter.pairable) adapter.pairable = true;
     }
 
     function restoreBtAgentPairable() {
@@ -1758,7 +1759,7 @@ Item {
 
     onBtAgentWantedChanged: {
         if (btAgentWanted) {
-            popupWindowRoot.saveBtAgentPairable();
+            popupWindowRoot.prepareBtAgentPairable();
             btAgentProcess.running = true;
         } else {
             if (btAgentProcess.running) {
@@ -1803,7 +1804,7 @@ Item {
         }
         Component.onCompleted: {
             if (popupWindowRoot.btAgentWanted) {
-                popupWindowRoot.saveBtAgentPairable();
+                popupWindowRoot.prepareBtAgentPairable();
                 btAgentProcess.running = true;
             }
         }
