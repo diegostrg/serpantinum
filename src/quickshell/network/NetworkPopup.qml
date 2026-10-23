@@ -1531,6 +1531,15 @@ Item {
     }
 
     Process {
+        id: btAgentProcess
+        command: ["bluetoothctl", "--agent", "NoInputNoOutput"]
+        stdinEnabled: true
+        running: popupWindowRoot.visible && popupWindowRoot.activeMode === "bt"
+        stdout: StdioCollector {}
+        stderr: StdioCollector {}
+    }
+
+    Process {
         id: btProfilePoller
         command: ["bash", popupWindowRoot.scriptsDir + "/bluetooth_panel_logic.sh"]
         running: false
