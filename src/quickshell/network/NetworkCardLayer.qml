@@ -188,6 +188,7 @@ Item {
             property bool isFailed: window.failedId === itemId
             property bool isMyUnpairing: window.isBtUnpairing(itemId)
             property bool isMyBusy: window.connectingId === itemId || !!window.busyTasks[itemId] || isMyUnpairing
+            property bool isUnpairNode: itemId.indexOf("forget_") === 0
 
             property bool isPairedBT: window.activeMode === "bt" && (typeof action !== "undefined" && action === "Connect")
             property bool isTargetWifi: window.activeMode === "wifi" && !window.isWifiConn && itemId === window.targetWifiSsid
@@ -236,6 +237,8 @@ Item {
                 let currentMac = typeof mac !== "undefined" ? mac : "";
                 let currentIsInfoNode = typeof isInfoNode !== "undefined" ? isInfoNode : false;
 
+                if (currentCmd.indexOf("BT_FORGET_") === 0 && window.isBtConnecting) return;
+
                 if (currentCmd === "TOGGLE_VIEW") {
                     floatCardDelegateContainer.isCardHovered = false;
                     window.hoveredCardCount = 0;
@@ -283,7 +286,7 @@ Item {
             FillButton {
                 id: fillBtn
                 visible: isMyActionable
-                enabled: !isMyBusy && !window.isBtOpBusy(itemId)
+                enabled: !isMyBusy && !window.isBtOpBusy(itemId) && !(isUnpairNode && window.isBtConnecting)
                 anchors.fill: parent
                 cornerRadius: ThemeBackend.borderRadius
                 fillDuration: fillBtn.rightHeld ? 900 : 600
@@ -309,7 +312,7 @@ Item {
             ClickButton {
                 id: clickBtn
                 visible: !isMyActionable
-                enabled: !isMyBusy && !window.isBtOpBusy(itemId)
+                enabled: !isMyBusy && !window.isBtOpBusy(itemId) && !(isUnpairNode && window.isBtConnecting)
                 anchors.fill: parent
                 cornerRadius: ThemeBackend.borderRadius
                 accentColor: isAccentGlass ? window.activeColor : ThemeBackend.surface0
